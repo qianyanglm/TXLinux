@@ -25,3 +25,15 @@ struct client_data
     char *write_buf;
     char buf[BUFFER_SIZE];
 };
+
+//将文件描述符设置为非阻塞的
+int setnonblocking(int fd)
+{
+    //获取文件描述符旧的状态标志
+    int old_option = fcntl(fd, F_GETFL);
+    //设置非阻塞标志
+    int new_option = old_option | O_NONBLOCK;
+    //控制文件的各种操作，这里是设置fd的状态标志
+    fcntl(fd, F_SETFL, new_option);
+    return old_option;//返回文件描述符旧的状态
+}
