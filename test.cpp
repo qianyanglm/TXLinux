@@ -1,3 +1,5 @@
+//代码清单9-7 服务器
+#define _GNU_SOURCE 1
 #include <arpa/inet.h>
 #include <cassert>
 #include <cerrno>
