@@ -37,3 +37,26 @@ int setnonblocking(int fd)
     fcntl(fd, F_SETFL, new_option);
     return old_option;//返回文件描述符旧的状态
 }
+
+int main(int argc, char *argv[])
+{
+    if (argc <= 2)
+    {
+        printf("usage: %s ip_address port_number\n", basename(argv[0]));
+        return 1;
+    }
+    const char *ip = argv[1];
+    int port = atoi(argv[2]);
+
+    int ret = 0;
+    struct sockaddr_in address;
+    bzero(&address, sizeof(address));
+    address.sin_family = AF_INET;
+    inet_pton(AF_INET, ip, &address.sin_addr);
+    address.sin_port = htons(port);
+
+    int listenfd = socket(PF_INET, SOCK_STREAM, 0);
+    assert(listenfd >= 0);
+
+    return 0;
+}
