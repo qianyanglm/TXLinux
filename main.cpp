@@ -13,6 +13,15 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define USER_LIMIT 5//最大用户数量
-#define BUFFER_SIZE 64
-#define FD_LIMIT 65535
+#define USER_LIMIT 5  //最大用户数量
+#define BUFFER_SIZE 64//读缓冲区的大小
+#define FD_LIMIT 65535//文件描述符数量限制
+
+//客户数据
+//客户端socket地址，待写到客户端的数据的位置，从客户端读入的数据
+struct client_data
+{
+    sockaddr_in address;
+    char *write_buf;
+    char buf[BUFFER_SIZE];
+};
