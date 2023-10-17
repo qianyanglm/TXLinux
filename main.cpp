@@ -79,6 +79,18 @@ int main(int argc, char *argv[])
 
     while (1)
     {
+        ret = poll(fds, user_counter + 1, -1);
+        if (ret < 0)
+        {
+            printf("poll failure\n");
+        }
+
+        for (int i = 0; i < user_counter + 1; ++i)
+        {
+            if ((fds[i].fd == listenfd) && (fds[i].revents & POLLIN))
+            {
+            }
+        }
     }
 
 
