@@ -58,5 +58,29 @@ int main(int argc, char *argv[])
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);
     assert(listenfd >= 0);
 
+    ret = bind(listenfd, (struct sockaddr *) &address, sizeof(address));
+    assert(ret != -1);
+
+    ret = listen(listenfd, 5);
+    assert(ret != -1);
+
+    //创建users数组，分配FD_LIMIT个client_data对象，可以预期
+    client_data *users = new client_data[FD_LIMIT];
+    pollfd fds[USER_LIMIT + 1];
+    int user_counter = 0;
+    for (int i = 0; i <= USER_LIMIT; ++i)
+    {
+        fds[i].fd = -1;
+        fds[i].events = 0;
+    }
+    fds[0].fd = listenfd;
+    fds[0].events = POLLIN | POLLERR;
+    fds[0].revents = 0;
+
+    while (1)
+    {
+    }
+
+
     return 0;
 }
