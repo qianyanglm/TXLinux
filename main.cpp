@@ -18,12 +18,12 @@
 #define FD_LIMIT 65535//文件描述符数量限制
 
 //客户数据
-//客户端socket地址，待写到客户端的数据的位置，从客户端读入的数据
+
 struct client_data
 {
-    sockaddr_in address;
-    char *write_buf;
-    char buf[BUFFER_SIZE];
+    sockaddr_in address;  //客户端socket地址
+    char *write_buf;      //待写到客户端的数据的位置，
+    char buf[BUFFER_SIZE];//存储从客户端接收的数据
 };
 
 //将文件描述符设置为非阻塞的
@@ -64,17 +64,21 @@ int main(int argc, char *argv[])
     ret = listen(listenfd, 5);
     assert(ret != -1);
 
-    //创建users数组，分配FD_LIMIT个client_data对象，可以预期
+    //创建users数组，分配FD_LIMIT个client_data对象，每个元素对应一个客户端连接
+    //存储客户端相关的数据，包括客户端地址，读写缓冲区等
     client_data *users = new client_data[FD_LIMIT];
+
     pollfd fds[USER_LIMIT + 1];
     int user_counter = 0;
     for (int i = 0; i <= USER_LIMIT; ++i)
     {
-        fds[i].fd = -1;
+        fds[i].fd = -1;//初始化为无效的文件描述符
         fds[i].events = 0;
     }
-    fds[0].fd = listenfd;
-    fds[0].events = POLLIN | POLLERR;
+    fds[0].fd = listenfd;            //存储文件描述符
+    fds[0].events = POLLIN | POLLERR;//存储需要监听的可读和错误事件
+
+    //存储实际发生事件。初始为0代表未发生
     fds[0].revents = 0;
 
     while (1)
@@ -85,14 +89,18 @@ int main(int argc, char *argv[])
             printf("poll failure\n");
         }
 
+        //每次poll返回时，遍历所有文件描述符
         for (int i = 0; i < user_counter + 1; ++i)
         {
+            //如果监听套接字上有POLLIN事件，表示有新的客户端连接请求
             if ((fds[i].fd == listenfd) && (fds[i].revents & POLLIN))
             {
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof(client_address);
+                //接受新的客户端连接，创建新连接的套接字描述符
                 int connfd = accept(listenfd, (struct sockaddr *) &client_address, &client_addrlength);
 
+                //连接出错
                 if (connfd < 0)
                 {
                     printf("errno is :%d\n", errno);
@@ -108,15 +116,19 @@ int main(int argc, char *argv[])
                     close(connfd);
                     continue;
                 }
+
                 //新的连接同时修改fds和users数组
-                user_counter++;
+                user_counter++;//更新用户计数器
+                //将新连接信息加入users数组
                 users[connfd].address = client_address;
                 setnonblocking(connfd);
                 fds[user_counter].fd = connfd;
+                //设置可读、关闭和错误事件
                 fds[user_counter].events = POLLIN | POLLRDHUP | POLLERR;
+                //表示是全新事件
                 fds[user_counter].revents = 0;
                 printf("comes a new user, now have %d users\n", user_counter);
-            }
+            }//如果监听套接字有错误
             else if (fds[i].revents & POLLERR)
             {
                 printf("get an error from %d\n", fds[i].fd);
@@ -128,7 +140,7 @@ int main(int argc, char *argv[])
                     printf("get socket option failed\n");
                 }
                 continue;
-            }
+            }//TCP连接被对方关闭，或者对方关闭了写操作
             else if (fds[i].revents & POLLRDHUP)
             {
                 //如果客户端关闭连接，则服务器也关闭对应的连接，并将用户总数-1
@@ -138,7 +150,7 @@ int main(int argc, char *argv[])
                 i--;
                 user_counter--;
                 printf("a client left\n");
-            }
+            }//如果监听套接字可以读取
             else if (fds[i].revents & POLLIN)
             {
                 int connfd = fds[i].fd;
@@ -163,7 +175,7 @@ int main(int argc, char *argv[])
                 else
                 {
                     //如果接收到客户数据，则通知其他socket连接准备写数据
-                    for (int j = 0; j <= user_counter; ++j)
+                    for (int j = 1; j <= user_counter; ++j)
                     {
                         if (fds[j].fd == connfd)
                         {
@@ -174,7 +186,7 @@ int main(int argc, char *argv[])
                         users[fds[j].fd].write_buf = users[connfd].buf;
                     }
                 }
-            }
+            }//监听套接字可写
             else if (fds[i].revents & POLLOUT)
             {
                 int connfd = fds[i].fd;
@@ -182,7 +194,8 @@ int main(int argc, char *argv[])
                 {
                     continue;
                 }
-                ret = send(connfd, users[connfd].write_buf, strlen(users[connfd].write_buf), 0);
+                send(connfd, users[connfd].write_buf, strlen(users[connfd].write_buf), 0);
+                users[connfd].write_buf = NULL;
                 //写完数据后需要重新注册fds[i]上的可读事件
                 fds[i].events |= ~POLLOUT;
                 fds[i].events |= POLLIN;
