@@ -69,6 +69,7 @@ int main(int argc, char *argv[])
     client_data *users = new client_data[FD_LIMIT];
 
     pollfd fds[USER_LIMIT + 1];
+    //实时记录目前连接的客户端数量
     int user_counter = 0;
     for (int i = 0; i <= USER_LIMIT; ++i)
     {
@@ -150,6 +151,8 @@ int main(int argc, char *argv[])
                 i--;
                 user_counter--;
                 printf("a client left\n");
+                //我自己加了这句话，来提示有几个连接
+                printf("leaves a user, now have %d users\n", user_counter);
             }//如果监听套接字可以读取
             else if (fds[i].revents & POLLIN)
             {
