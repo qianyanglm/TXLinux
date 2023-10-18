@@ -197,7 +197,9 @@ int main(int argc, char *argv[])
                 send(connfd, users[connfd].write_buf, strlen(users[connfd].write_buf), 0);
                 users[connfd].write_buf = nullptr;
                 //写完数据后需要重新注册fds[i]上的可读事件
+                //不再准备可写事件
                 fds[i].events |= ~POLLOUT;
+                //注册可读事件
                 fds[i].events |= POLLIN;
             }
         }
