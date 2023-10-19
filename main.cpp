@@ -30,7 +30,7 @@ int setnonblocking(int fd)
     return old_option;
 }
 
-//将fd文件描述符上的事件注册到epollfd指示的epoll内核事件表中
+//将fd文件描述符上的事件添加到epollfd代表的epoll事件表中
 void addfd(int epollfd, int fd)
 {
     epoll_event event;
@@ -90,7 +90,7 @@ int main(int argc, char *argv[])
 
     while (1)
     {
-        //当事件发生时，将所有就绪的事件拷贝到events中
+        //当事件发生时，将所有就绪的事件拷贝到events中，并返回就绪的文件描述符个数
         int number = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
         if (number < 0)
         {
@@ -98,6 +98,7 @@ int main(int argc, char *argv[])
             break;
         }
 
+        //遍历events数组中就绪的事件
         for (int i = 0; i < number; ++i)
         {
             int sockfd = events[i].data.fd;
