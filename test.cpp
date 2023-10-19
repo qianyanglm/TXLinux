@@ -1,28 +1,21 @@
-//代码清单9-7 服务器
-#define _GNU_SOURCE 1
 #include <arpa/inet.h>
-#include <cassert>
-#include <cerrno>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <netinet/in.h>
-#include <poll.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
-#define USER_LIMIT 5
-#define BUFFER_SIZE 64
-#define FD_LIMIT 65535
-
-struct client_data
-{
-    sockaddr_in address;
-    char *write_buff;
-    char buf[BUFFER_SIZE];
-};
+#define MAX_EVENT_NUMBER 1024
+#define TCP_BUFFER_SIZE 512
+#define UDP_BUFFER_SIZE 1024
 
 int setnonblocking(int fd)
 {
@@ -32,169 +25,131 @@ int setnonblocking(int fd)
     return old_option;
 }
 
+void addfd(int epollfd, int fd)
+{
+    epoll_event event;
+    event.data.fd = fd;
+    event.events = EPOLLIN | EPOLLET;
+    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+    setnonblocking(fd);
+}
+
 int main(int argc, char *argv[])
 {
-
-    if (argc <= 2)
+    if (argc != 3)
     {
-        printf("Wrong number of parameters \n");
+        printf("usage: %s ip_address port_number\n", basename(argv[0]));
         return 1;
     }
-
+    const char *ip = argv[1];
     int port = atoi(argv[2]);
-    char *ip = argv[1];
 
+    int ret = 0;
     struct sockaddr_in address;
-    memset(&address, 0, sizeof(address));
+    bzero(&address, sizeof(address));
     address.sin_family = AF_INET;
-    address.sin_port = htons(port);
     inet_pton(AF_INET, ip, &address.sin_addr);
+    address.sin_port = htons(port);
 
-    int sockfd = socket(PF_INET, SOCK_STREAM, 0);
-    assert(sockfd >= 0);
-    int ret = bind(sockfd, (struct sockaddr *) &address, sizeof(address));
+    // 创建TCP socket，并将其绑定在端口port上
+    int listenfd = socket(PF_INET, SOCK_STREAM, 0);
+    assert(listenfd >= 0);
+
+    ret = bind(listenfd, (struct sockaddr *) &address, sizeof(address));
     assert(ret != -1);
 
-    ret = listen(sockfd, 5);
+    ret = listen(listenfd, 5);
     assert(ret != -1);
 
-    /*
-	* 创建users数组, 分配 FD_LIMIT个client_data对象, 这样每个socket连接都可以获得一个对象
-	* 并且可以根据socket的值直接索引对应的对象
-	*/
-    client_data *users = new client_data[FD_LIMIT];
-    pollfd fds[USER_LIMIT + 1];
-    int user_count = 0;
-    for (int i = 0; i <= USER_LIMIT; i++)
-    {
-        fds[i].fd = -1;
-        fds[i].events = 0;
-    }
+    // 创建UDP socket，并将其绑定到端口port上
+    bzero(&address, sizeof(address));
+    address.sin_family = AF_INET;
+    inet_pton(AF_INET, ip, &address.sin_addr);
+    address.sin_port = htons(port);
+    int udpfd = socket(PF_INET, SOCK_DGRAM, 0);
+    assert(udpfd >= 0);
 
-    fds[0].fd = sockfd;
-    fds[0].events = POLLIN | POLLERR;
-    fds[0].revents = 0;
+
+    ret = bind(udpfd, (struct sockaddr *) &address, sizeof(address));
+    assert(ret != -1);
+
+    epoll_event events[MAX_EVENT_NUMBER];
+    int epollfd = epoll_create(5);
+    assert(epollfd != -1);
+    // 注册TCP socket和UDP socket上的可读事件
+    addfd(epollfd, listenfd);
+    addfd(epollfd, udpfd);
 
     while (1)
     {
-
-        ret = poll(fds, user_count + 1, -1);
-        if (ret < 0)
+        int number = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
+        if (number < 0)
         {
-            printf("poll failure\n");
+            printf("epoll failure\n");
             break;
         }
 
-        for (int i = 0; i < user_count + 1; i++)
+        for (int i = 0; i < number; ++i)
         {
-            if ((fds[i].fd == sockfd) && (fds[i].revents & POLLIN))
+            int sockfd = events[i].data.fd;
+            if (sockfd == listenfd)
             {
-
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof(client_address);
-                int connfd = accept(sockfd, (struct sockaddr *) &client_address, &client_addrlength);
-
-                if (connfd < 0)
-                {
-                    printf("errno is: %d\n", errno);
-                    continue;
-                }
-
-                if (user_count >= USER_LIMIT)
-                {
-                    const char *info = "to many users\n";
-                    printf("%s", info);
-                    send(connfd, info, strlen(info), 0);
-                    close(connfd);
-                    continue;
-                }
-
-                user_count++;
-                users[connfd].address = client_address;
-                setnonblocking(connfd);
-                fds[user_count].fd = connfd;
-                fds[user_count].events = POLLIN | POLLRDHUP | POLLERR;
-                fds[user_count].revents = 0;
-                printf("come a new client, now hava %d users\n", user_count);
+                int connfd = accept(listenfd, (struct sockaddr *) &client_address, &client_addrlength);
+                addfd(epollfd, connfd);
             }
-            else if (fds[i].revents & POLLERR)
+            else if (sockfd == udpfd)
             {
-                printf("get an error from %d\n", fds[i].fd);
-                char errors[100];
-                memset(errors, '\0', 100);
-                socklen_t length = sizeof(errors);
+                char buf[UDP_BUFFER_SIZE];
+                memset(buf, '\0', UDP_BUFFER_SIZE);
+                struct sockaddr_in client_address;
+                socklen_t client_addrlength = sizeof(client_address);
 
-                if (getsockopt(fds[i].fd, SOL_SOCKET, SO_ERROR, &errors, &length) < 0)
+                ret = recvfrom(udpfd, buf, UDP_BUFFER_SIZE - 1, 0, (struct sockaddr *) &client_address,
+                               &client_addrlength);
+                if (ret > 0)
                 {
-                    printf("get socketopt failed\n");
+                    sendto(udpfd, buf, UDP_BUFFER_SIZE - 1, 0, (struct sockaddr *) &client_address,
+                           client_addrlength);
+                    printf("receive UDP data: %s\n", buf);
                 }
-                continue;
             }
-            else if (fds[i].revents & POLLRDHUP)
+            else if (events[i].events & EPOLLIN)
             {
-                users[fds[i].fd] = users[fds[user_count].fd];
-                close(fds[i].fd);
-                fds[i] = fds[user_count];
-                i--;
-                user_count--;
-                printf("a client left\n");
-            }
-            else if (fds[i].revents & POLLIN)
-            {
-
-                int connfd = fds[i].fd;
-                memset(users[connfd].buf, '\0', BUFFER_SIZE);
-                ret = recv(connfd, users[connfd].buf, BUFFER_SIZE - 1, 0);
-                printf("get %d bytes of client data %s from %d\n", ret, users[connfd].buf, connfd);
-
-                if (ret < 0)
+                char buf[TCP_BUFFER_SIZE];
+                while (1)
                 {
-
-                    if (errno != EAGAIN)
+                    memset(buf, '\0', TCP_BUFFER_SIZE);
+                    ret = recv(sockfd, buf, TCP_BUFFER_SIZE - 1, 0);
+                    if (ret < 0)
                     {
-                        close(connfd);
-                        users[fds[i].fd] = users[fds[user_count].fd];
-                        fds[i] = fds[user_count];
-                        i--;
-                        user_count--;
-                    }
-                }
-                else if (ret == 0)
-                {
-                }
-                else
-                {
-                    for (int j = 1; j <= user_count; j++)
-                    {
-                        if (fds[j].fd == connfd)
+                        if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
                         {
-                            continue;
+                            break;
                         }
-
-                        fds[j].events |= ~POLLIN;
-                        fds[j].events |= POLLOUT;
-                        users[fds[j].fd].write_buff = users[connfd].buf;
+                        close(sockfd);
+                        break;
+                    }
+                    else if (ret == 0)
+                    {
+                        close(sockfd);
+                    }
+                    else
+                    {
+                        send(sockfd, buf, ret, 0);
+                        //自己加的，在终端输出TCP收到的数据
+                        printf("receive TCP data: %s\n", buf);
                     }
                 }
             }
-            else if (fds[i].revents & POLLOUT)
+            else
             {
-                int connfd = fds[i].fd;
-                if (!users[connfd].write_buff)
-                {
-                    continue;
-                }
-                ret = send(connfd, users[connfd].write_buff, strlen(users[connfd].write_buff), 0);
-
-                // 写完后重新注册fds[i]的可读事件
-                users[connfd].write_buff = nullptr;
-                fds[i].events |= ~POLLOUT;
-                fds[i].events |= POLLIN;
+                printf("something else happened\n");
             }
         }
     }
 
-    delete[] users;
-    close(sockfd);
+    close(listenfd);
     return 0;
 }
