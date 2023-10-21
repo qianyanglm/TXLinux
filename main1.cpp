@@ -1,45 +1,102 @@
-﻿//代码清单10-1 统一事件源
+﻿//代码清单10-3 用SIG_URG检测带外数据是否到达
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <libgen.h>
 #include <netinet/in.h>
-#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/epoll.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <unistd.h>
 
-#define MAX_EVENT_NUMBER 1024
-static int pipefd[2];
+#define BUF_SIZE 1024
 
-//将文件描述符设置为非阻塞的
-int setnonblocking(int fd)
+static int connfd;
+
+// SIGURG信号的处理函数
+void sig_urg(int sig)
 {
-    //设置文件描述符
-    int old_option = fcntl(fd, F_GETFL);
-    //设置非阻塞标志
-    int new_option = old_option | O_NONBLOCK;
-    //控制文件的各种操作，这里设置fd的标志
-    fcntl(fd, F_SETFL, new_option);
-    //返回老的状态
-    return old_option;
+    int save_errno = errno;
+    char buffer[BUF_SIZE];
+    memset(buffer, '\0', BUF_SIZE);
+    // 接收带外数据，只有SO_OOBINLINE套接字选项未开启时才能这样读带外数据，否则recv函数会返回EINVAL
+    // 此处代码有一个bug，当我方接收缓冲区已满，而对方进入紧急状态时，会发一个不含数据的TCP报文段
+    // 来指示对端进入了紧急状态，我方接收到这个TCP报文段后就会给本进程发送SIGURG信号
+    // 但我们还未收到这个紧急字节，此时recv函数会返回EWOULDBLOCK，我们应该一直读connfd
+    // 以便在接收缓冲区中腾出空间，继而允许对端TCP发送那个带外字节
+    int ret = recv(connfd, buffer, BUF_SIZE - 1, MSG_OOB);
+    printf("got %d bytes of oob data '%s'\n", ret, buffer);
+    errno = save_errno;
 }
 
-//将fd文件描述符上的事件添加到epollfd代表的epoll事件表中
-void addfd(int epollfd, int fd)
+//注册信号处理函数
+void addsig(int sig, void (*sig_handler)(int))
 {
-    epoll_event event;
-    event.data.fd = fd;
-    //当该文件描述符上有数据可读时，将触发epoll事件
-    event.events = EPOLLIN | EPOLLET;
-    //向事件表中注册fd上的事件
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
-    //调用 setnonblocking(fd) 将文件描述符 fd 设置为非阻塞模式，以确保后续的 I/O 操作不会阻塞整个程序
-    setnonblocking(fd);
+    struct sigaction sa;
+    memset(&sa, '\0', sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sa.sa_flags |= SA_RESTART;
+    sigfillset(&sa.sa_mask);
+    assert(sigaction(sig, &sa, NULL) != -1);
 }
 
-//信号处理函数
+int main(int argc, char *argv[])
+{
+    if (argc <= 2)
+    {
+        printf("usage: %s ip_address port_number\n", basename(argv[0]));
+        return 1;
+    }
+    const char *ip = argv[1];
+    int port = atoi(argv[2]);
+
+    struct sockaddr_in address;
+    bzero(&address, sizeof(address));
+    address.sin_family = AF_INET;
+    inet_pton(AF_INET, ip, &address.sin_addr);
+    address.sin_port = htons(port);
+
+    int sock = socket(PF_INET, SOCK_STREAM, 0);
+    assert(sock >= 0);
+
+    int ret = bind(sock, (struct sockaddr *) &address, sizeof(address));
+    assert(ret != -1);
+
+    ret = listen(sock, 5);
+    assert(ret != -1);
+
+    struct sockaddr_in client;
+    socklen_t client_addrlength = sizeof(client);
+    connfd = accept(sock, (struct sockaddr *) &client, &client_addrlength);
+    if (connfd < 0)
+    {
+        printf("errno is :%d\n", errno);
+    }
+    else
+    {
+        //处理接收到的带外数据
+        addsig(SIGURG, sig_urg);
+        //使用SIGURG之前，我们必须设置socket的宿主进程或者进程组
+        //用于将 connfd 文件描述符的拥有者设置为当前进程的PID（进程ID
+        fcntl(connfd, F_SETOWN, getpid());
+
+        char buffer[BUF_SIZE];
+        while (1)//循环接收普通数据
+        {
+            memset(buffer, '\0', BUF_SIZE);
+            ret = recv(connfd, buffer, BUF_SIZE - 1, 0);
+            if (ret <= 0)
+            {
+                break;
+            }
+            printf("got %d bytes of normal data '%s'\n", ret, buffer);
+        }
+        close(connfd);
+    }
+
+    close(sock);
+    return 0;
+}

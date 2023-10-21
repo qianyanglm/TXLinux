@@ -5,6 +5,7 @@
 #include <libgen.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,8 +15,8 @@
 #include <unistd.h>
 
 #define MAX_EVENT_NUMBER 1024
-#define TCP_BUFFER_SIZE 512
-#define UDP_BUFFER_SIZE 1024
+
+static int pipefd[2];
 
 int setnonblocking(int fd)
 {
@@ -32,6 +33,29 @@ void addfd(int epollfd, int fd)
     event.events = EPOLLIN | EPOLLET;
     epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
     setnonblocking(fd);
+}
+
+// 信号处理函数
+void sig_handler(int sig)
+{
+    // 保留原来的errno，在函数最后恢复，保证函数的可重入性
+    int save_errno = errno;
+    int msg = sig;
+    // 将信号写入管道，以通知主循环，此处代码是错误的，只发送了int的低地址1字节
+    // 如果系统是大端字节序，则发送的永远是0，因此可以改成发送一个int，或将sig改为网络字节序，然后发送最后一个字节
+    send(pipefd[1], (char *) &msg, 1, 0);
+    errno = save_errno;
+}
+
+// 设置信号的处理函数
+void addsig(int sig)
+{
+    struct sigaction sa;
+    memset(&sa, '\0', sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sa.sa_flags |= SA_RESTART;
+    sigfillset(&sa.sa_mask);
+    assert(sigaction(sig, &sa, NULL) != -1);
 }
 
 int main(int argc, char *argv[])
@@ -51,39 +75,40 @@ int main(int argc, char *argv[])
     inet_pton(AF_INET, ip, &address.sin_addr);
     address.sin_port = htons(port);
 
-    // 创建TCP socket，并将其绑定在端口port上
     int listenfd = socket(PF_INET, SOCK_STREAM, 0);
     assert(listenfd >= 0);
 
     ret = bind(listenfd, (struct sockaddr *) &address, sizeof(address));
-    assert(ret != -1);
-
+    if (ret == -1)
+    {
+        printf("errno is %d\n", errno);
+        return 1;
+    }
     ret = listen(listenfd, 5);
-    assert(ret != -1);
-
-    // 创建UDP socket，并将其绑定到端口port上
-    bzero(&address, sizeof(address));
-    address.sin_family = AF_INET;
-    inet_pton(AF_INET, ip, &address.sin_addr);
-    address.sin_port = htons(port);
-    int udpfd = socket(PF_INET, SOCK_DGRAM, 0);
-    assert(udpfd >= 0);
-
-
-    ret = bind(udpfd, (struct sockaddr *) &address, sizeof(address));
     assert(ret != -1);
 
     epoll_event events[MAX_EVENT_NUMBER];
     int epollfd = epoll_create(5);
     assert(epollfd != -1);
-    // 注册TCP socket和UDP socket上的可读事件
     addfd(epollfd, listenfd);
-    addfd(epollfd, udpfd);
 
-    while (1)
+    // 使用socketpair创建管道，注册pipefd[0]上的可读事件
+    ret = socketpair(PF_UNIX, SOCK_STREAM, 0, pipefd);
+    assert(ret != -1);
+    setnonblocking(pipefd[1]);
+    addfd(epollfd, pipefd[0]);
+
+    // 设置一些信号的处理函数
+    addsig(SIGHUP);
+    addsig(SIGCHLD);
+    addsig(SIGTERM);
+    addsig(SIGINT);
+    bool stop_server = false;
+
+    while (!stop_server)
     {
         int number = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
-        if (number < 0)
+        if ((number < 0) && (errno != EINTR))
         {
             printf("epoll failure\n");
             break;
@@ -92,64 +117,51 @@ int main(int argc, char *argv[])
         for (int i = 0; i < number; ++i)
         {
             int sockfd = events[i].data.fd;
+            // 如果就绪的文件描述符是listenfd，则处理新的连接
             if (sockfd == listenfd)
             {
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof(client_address);
                 int connfd = accept(listenfd, (struct sockaddr *) &client_address, &client_addrlength);
                 addfd(epollfd, connfd);
+                // 如果就绪的文件描述符是pipefd[0]，则处理信号
             }
-            else if (sockfd == udpfd)
+            else if ((sockfd == pipefd[0]) && (events[i].events & EPOLLIN))
             {
-                char buf[UDP_BUFFER_SIZE];
-                memset(buf, '\0', UDP_BUFFER_SIZE);
-                struct sockaddr_in client_address;
-                socklen_t client_addrlength = sizeof(client_address);
-
-                ret = recvfrom(udpfd, buf, UDP_BUFFER_SIZE - 1, 0, (struct sockaddr *) &client_address,
-                               &client_addrlength);
-                if (ret > 0)
+                int sig;
+                char signals[1024];
+                ret = recv(pipefd[0], signals, sizeof(signals), 0);
+                if (ret == -1)
                 {
-                    sendto(udpfd, buf, UDP_BUFFER_SIZE - 1, 0, (struct sockaddr *) &client_address,
-                           client_addrlength);
-                    printf("receive UDP data: %s\n", buf);
+                    continue;
                 }
-            }
-            else if (events[i].events & EPOLLIN)
-            {
-                char buf[TCP_BUFFER_SIZE];
-                while (1)
+                else if (ret == 0)
                 {
-                    memset(buf, '\0', TCP_BUFFER_SIZE);
-                    ret = recv(sockfd, buf, TCP_BUFFER_SIZE - 1, 0);
-                    if (ret < 0)
+                    continue;
+                }
+                else
+                {
+                    // 每个信号占1字节，所以按字节逐个接收信号，我们用SIGERTM信号为例说明如何安全终止服务器主循环
+                    for (int i = 0; i < ret; ++i)
                     {
-                        if ((errno == EAGAIN) || (errno == EWOULDBLOCK))
+                        switch (signals[i])
                         {
-                            break;
+                            case SIGCHLD:
+                            case SIGHUP:
+                                continue;
+                            case SIGTERM:
+                            case SIGINT:
+                                stop_server = true;
                         }
-                        close(sockfd);
-                        break;
-                    }
-                    else if (ret == 0)
-                    {
-                        close(sockfd);
-                    }
-                    else
-                    {
-                        send(sockfd, buf, ret, 0);
-                        //自己加的，在终端输出TCP收到的数据
-                        printf("receive TCP data: %s\n", buf);
                     }
                 }
-            }
-            else
-            {
-                printf("something else happened\n");
             }
         }
     }
 
+    printf("close fds\n");
     close(listenfd);
+    close(pipefd[1]);
+    close(pipefd[0]);
     return 0;
 }
