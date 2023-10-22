@@ -21,6 +21,7 @@ struct client_data
 //定时器类
 class util_timer
 {
+public:
     util_timer(): prev(NULL), next(NULL) {}
 
 public:
