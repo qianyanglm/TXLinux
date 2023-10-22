@@ -1,102 +1,22 @@
-﻿//代码清单10-3 用SIG_URG检测带外数据是否到达
-#include <arpa/inet.h>
-#include <assert.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <libgen.h>
-#include <netinet/in.h>
-#include <signal.h>
+﻿#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
-#define BUF_SIZE 1024
-
-static int connfd;
-
-// SIGURG信号的处理函数
-void sig_urg(int sig)
+void sig_handler(int num)
 {
-    int save_errno = errno;
-    char buffer[BUF_SIZE];
-    memset(buffer, '\0', BUF_SIZE);
-    // 接收带外数据，只有SO_OOBINLINE套接字选项未开启时才能这样读带外数据，否则recv函数会返回EINVAL
-    // 此处代码有一个bug，当我方接收缓冲区已满，而对方进入紧急状态时，会发一个不含数据的TCP报文段
-    // 来指示对端进入了紧急状态，我方接收到这个TCP报文段后就会给本进程发送SIGURG信号
-    // 但我们还未收到这个紧急字节，此时recv函数会返回EWOULDBLOCK，我们应该一直读connfd
-    // 以便在接收缓冲区中腾出空间，继而允许对端TCP发送那个带外字节
-    int ret = recv(connfd, buffer, BUF_SIZE - 1, MSG_OOB);
-    printf("got %d bytes of oob data '%s'\n", ret, buffer);
-    errno = save_errno;
+    printf("receive the signal %d.\n", num);
+    alarm(2);
 }
 
-//注册信号处理函数
-void addsig(int sig, void (*sig_handler)(int))
+int main()
 {
-    struct sigaction sa;
-    memset(&sa, '\0', sizeof(sa));
-    sa.sa_handler = sig_handler;
-    sa.sa_flags |= SA_RESTART;
-    sigfillset(&sa.sa_mask);
-    assert(sigaction(sig, &sa, NULL) != -1);
-}
-
-int main(int argc, char *argv[])
-{
-    if (argc <= 2)
+    signal(SIGALRM, sig_handler);
+    alarm(2);
+    while (1)//做一个死循环，防止主线程提早退出，相等于线程中的join
     {
-        printf("usage: %s ip_address port_number\n", basename(argv[0]));
-        return 1;
+        pause();
     }
-    const char *ip = argv[1];
-    int port = atoi(argv[2]);
-
-    struct sockaddr_in address;
-    bzero(&address, sizeof(address));
-    address.sin_family = AF_INET;
-    inet_pton(AF_INET, ip, &address.sin_addr);
-    address.sin_port = htons(port);
-
-    int sock = socket(PF_INET, SOCK_STREAM, 0);
-    assert(sock >= 0);
-
-    int ret = bind(sock, (struct sockaddr *) &address, sizeof(address));
-    assert(ret != -1);
-
-    ret = listen(sock, 5);
-    assert(ret != -1);
-
-    struct sockaddr_in client;
-    socklen_t client_addrlength = sizeof(client);
-    connfd = accept(sock, (struct sockaddr *) &client, &client_addrlength);
-    if (connfd < 0)
-    {
-        printf("errno is :%d\n", errno);
-    }
-    else
-    {
-        //处理接收到的带外数据
-        addsig(SIGURG, sig_urg);
-        //使用SIGURG之前，我们必须设置socket的宿主进程或者进程组
-        //用于将 connfd 文件描述符的拥有者设置为当前进程的PID（进程ID
-        fcntl(connfd, F_SETOWN, getpid());
-
-        char buffer[BUF_SIZE];
-        while (1)//循环接收普通数据
-        {
-            memset(buffer, '\0', BUF_SIZE);
-            ret = recv(connfd, buffer, BUF_SIZE - 1, 0);
-            if (ret <= 0)
-            {
-                break;
-            }
-            printf("got %d bytes of normal data '%s'\n", ret, buffer);
-        }
-        close(connfd);
-    }
-
-    close(sock);
-    return 0;
+    //pause();//如果没有做一个死循环则只会让出一次cpu然后就还给主线程，主线程一旦运行结束就会退出程序
+    exit(0);
 }
