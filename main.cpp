@@ -250,6 +250,7 @@ int main(int argc, char *argv[])
             {
                 //others
             }
+            //定时任务触发时，执行定时任务处理函数
             if (timeout)
             {
                 timer_handler();
