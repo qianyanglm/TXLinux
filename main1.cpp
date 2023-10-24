@@ -1,22 +1,37 @@
-﻿#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
+﻿#include <cstdio>
+#include <cstdlib>
+#include <event.h>
+#include <sys/signal.h>
 
-void sig_handler(int num)
+void signal_cb(int fd, short event, void *argc)
 {
-    printf("receive the signal %d.\n", num);
-    alarm(2);
+    struct event_base *base = (event_base *) argc;
+    struct timeval delay = {2, 0};
+    printf("Caught an interrupt signal: exiting cleanly in two seconds...\n");
+    event_base_loopexit(base, &delay);
+}
+
+void timeout_cb(int fd, short event, void *argc)
+{
+    printf("timeout\n");
 }
 
 int main()
 {
-    signal(SIGALRM, sig_handler);
-    alarm(2);
-    while (1)//做一个死循环，防止主线程提早退出，相等于线程中的join
-    {
-        pause();
-    }
-    //pause();//如果没有做一个死循环则只会让出一次cpu然后就还给主线程，主线程一旦运行结束就会退出程序
-    exit(0);
+    struct event_base *base = event_init();
+
+    struct event *signale_event = evsignal_new(base, SIGINT, signal_cb, base);
+    event_add(signale_event, NULL);
+
+    timeval tv = {1, 0};
+    struct event *timeout_event = evtimer_new(base, timeout_cb, NULL);
+    event_add(timeout_event, &tv);
+
+    event_base_dispatch(base);
+
+    event_free(timeout_event);
+    event_free(signale_event);
+    event_base_free(base);
+
+    return 0;
 }
