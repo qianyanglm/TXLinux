@@ -6,7 +6,7 @@
 
 int main(int argc, char *argv[])
 {
-    printf("%s", basename(argv[1]));
+    printf("%s", basename(argv[0]));
 
     return 0;
 }
