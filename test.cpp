@@ -33,19 +33,27 @@ struct client_data
     int pipefd[2];      //和父进程通信用的管道
 };
 
+//把文件的读写模式设置为非阻塞的
 int setnoblocking(int fd)
 {
+    //获取文件描述符当前的标志状态
     int old_option = fcntl(fd, F_GETFL);
+    //在old_option的基础上进行位或运算，设置非阻塞标志
     fcntl(fd, F_SETFL, old_option | O_NONBLOCK);
+    //返回文件描述符老的状态
     return old_option;
 }
 
+//向epoll实例添加一个文件描述符
 void addfd(int epollfd, int fd)
 {
     epoll_event event;
     event.data.fd = fd;
+    //监听读事件和ET模式
     event.events = EPOLLIN | EPOLLET;
+    //fd添加到epoll实例epollfd监听的描述符集合中
     epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);
+    //fd设置为非阻塞模式
     setnoblocking(fd);
 }
 
@@ -55,7 +63,9 @@ void sig_handler(int sig)
     //保留原来的errno，在函数最后恢复，以保证可重入性。
     int save_errno = errno;
     int msg = sig;
+    //发送msg到管道的写端，将信号值传递出去
     send(sig_pipefd[1], (void *) &msg, 1, 0);
+    //恢复原来的信号值
     errno = save_errno;
 }
 
@@ -125,7 +135,11 @@ int run_child(int idx, client_data *users, char *share_mem)
                 else if (ret == 0)
                 {
                     //stop_child = true;
-                    printf("get nothing\n");
+                    printf("get nothing1\n");
+                    printf("a client left\n");
+                    //我自己加了这句话，来提示有几个连接
+                    printf("leaves a user, now have %d users\n", idx);
+
                     continue;
                 }
                 else
@@ -250,6 +264,7 @@ int main(int argc, char const *argv[])
         }
         for (int i = 0; i < number; i++)
         {
+
             int sockfd = events[i].data.fd;
             //新的客户连接到来
             if (sockfd == listenfd)
@@ -293,6 +308,8 @@ int main(int argc, char const *argv[])
                     close(sig_pipefd[0]);
                     close(sig_pipefd[1]);
                     run_child(user_count, users, share_mem);
+
+
                     munmap((void *) share_mem, USER_LIMIT * BUFFER_SIZE);
                     exit(0);
                 }
@@ -321,7 +338,7 @@ int main(int argc, char const *argv[])
                 }
                 else if (ret == 0)
                 {
-                    printf("get nothing\n");
+                    printf("get nothing2\n");
                     continue;
                 }
                 else
@@ -392,7 +409,7 @@ int main(int argc, char const *argv[])
             {
                 int child = 0;
                 ret = recv(sockfd, (void *) &child, sizeof(child), 0);
-                printf("read data from child%d accross pipe；ret=%d\n", child, ret);
+                printf("read data from child: %d accross pipe；ret=%d\n", child, ret);
                 if (ret == -1)
                 {
                     printf("recv error\n");
@@ -400,7 +417,7 @@ int main(int argc, char const *argv[])
                 }
                 else if (ret == 0)
                 {
-                    printf("get nothing\n");
+                    printf("get nothing3\n");
                     continue;
                 }
                 else
