@@ -74,11 +74,13 @@ void addsig(int sig, void (*handler)(int), bool restart = true)
 {
     struct sigaction sa;
     memset(&sa, '\0', sizeof(sa));
-    sa.sa_handler = handler;
+    sa.sa_handler = handler;//指定信号处理函数
     if (restart)
-        sa.sa_flags |= SA_RESTART;
+        sa.sa_flags |= SA_RESTART;//为true则重启系统调用
+    //在信号集中设置所有信号，即将所有信号设置为1，阻塞所有信号
     sigfillset(&sa.sa_mask);
-    assert(sigaction(sig, &sa, NULL) != -1);//捕获到信号sig，使用sa中规定的方法处理
+    //捕获到信号sig，使用sa中的信号处理函数处理
+    assert(sigaction(sig, &sa, NULL) != -1);
 }
 
 //关掉子进程
@@ -101,7 +103,7 @@ int run_child(int idx, client_data *users, char *share_mem)
     int child_epollfd = epoll_create(5);
     assert(child_epollfd != -1);
     printf("child pid=%d is running\n", getpid());
-    int connfd = users[idx].connfd;
+    int connfd = users[idx].connfd;//这是客户连接
     addfd(child_epollfd, connfd);
     int pipefd = users[idx].pipefd[1];
     addfd(child_epollfd, pipefd);
@@ -136,6 +138,8 @@ int run_child(int idx, client_data *users, char *share_mem)
                 {
                     //stop_child = true;
                     printf("get nothing1\n");
+
+                    //我自己加的，每次一个客户端连接断开的时候，显示现在还有几个连接
                     printf("a client left\n");
                     //我自己加了这句话，来提示有几个连接
                     printf("leaves a user, now have %d users\n", idx);
