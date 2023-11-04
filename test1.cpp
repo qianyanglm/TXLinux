@@ -183,7 +183,8 @@ int main(int argc, char const *argv[])
     //初始化users以及hash表
     int user_count = 0;                                  //当前的客户数量
     client_data *users = new client_data[USER_LIMIT + 1];//客户连接数组。进程用客户连接的编号来索引这个数组，即可取得相关的客户连接数据
-    sub_prcess = new int[PROCESS_LIMIT];
+
+    sub_prcess = new int[PROCESS_LIMIT * 10];
     for (int i = 0; i < PROCESS_LIMIT; i++)
     {
         sub_prcess[i] = -1;

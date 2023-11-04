@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <assert.h>
+#include <climits>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -69,6 +70,7 @@ void sig_handler(int sig)
     errno = save_errno;
 }
 
+//信号处理函数的实现
 //void (*handler)(int) 表示 接受一个int类型参数，返回值为void的函数指针handler
 void addsig(int sig, void (*handler)(int), bool restart = true)
 {
@@ -103,16 +105,22 @@ int run_child(int idx, client_data *users, char *share_mem)
     int child_epollfd = epoll_create(5);
     assert(child_epollfd != -1);
     printf("child pid=%d is running\n", getpid());
-    int connfd = users[idx].connfd;//这是客户连接
+    //获取当前子进程需要处理的客户连接connfd
+    int connfd = users[idx].connfd;
+    //将connfd添加到子进程实例中，以便监听该客户端套接字
     addfd(child_epollfd, connfd);
     int pipefd = users[idx].pipefd[1];
+    //同上，以便于主进程通信
     addfd(child_epollfd, pipefd);
 
+    //设置进程被终止时的信号处理函数
+    addsig(SIGTERM, child_term_handler, false);
+
     int ret;
-    addsig(SIGTERM, child_term_handler, false);//设置进程被终止时的信号处理函数
 
     while (!stop_child)
     {
+        //number表示有多少个网络事件发生
         int number = epoll_wait(child_epollfd, events, MAX_EVENT_NUMBER, -1);
         if ((number < 0) && (errno != EINTR))
         {
@@ -121,22 +129,33 @@ int run_child(int idx, client_data *users, char *share_mem)
             printf("epoll failure\n");
             break;
         }
+        //遍历events的每个事件
         for (int i = 0; i < number; i++)
         {
+            //发生事件的socket
             int sockfd = events[i].data.fd;
             //本子进程负责的socket有数据进来
             if ((sockfd == connfd) && (events[i].events & EPOLLIN))
             {
-                memset(share_mem + idx * BUFFER_SIZE, '\0', BUFFER_SIZE);//把本进程对应的共享内存段清空
+                //把本进程对应的共享内存段清空
+                memset(share_mem + idx * BUFFER_SIZE, '\0', BUFFER_SIZE);
+                //读取数据
                 ret = recv(sockfd, share_mem + idx * BUFFER_SIZE, BUFFER_SIZE - 1, 0);
+
+                //我添加的打印语句，这里不太合适，出现的太早了
+                printf("Received %d bytes from client %d: %s\n", ret, i, share_mem + idx * BUFFER_SIZE);
+
                 if (ret < 0)
                 {
                     if (errno != EAGAIN)
                         stop_child = true;
                 }
+                //客户端断开
                 else if (ret == 0)
                 {
-                    //stop_child = true;
+                    //标记是否退出循环
+                    stop_child = true;
+                    //打印信息来通知主进程
                     printf("get nothing1\n");
 
                     //我自己加的，每次一个客户端连接断开的时候，显示现在还有几个连接
@@ -146,8 +165,10 @@ int run_child(int idx, client_data *users, char *share_mem)
 
                     continue;
                 }
+                //如果正常读取数据的话
                 else
                 {
+                    //通过pipe发送idx给主进程，idx表示第几个客户端
                     assert(send(pipefd, (void *) &idx, sizeof(idx), 0) != -1);//这里可以尝试一下改成void会怎么样
                 }
             }
@@ -155,6 +176,7 @@ int run_child(int idx, client_data *users, char *share_mem)
             else if ((sockfd == pipefd) && (events[i].events & EPOLLIN))
             {
                 int client = 0;
+                //从共享内存中读出数据
                 ret = recv(sockfd, (void *) &client, sizeof(client), 0);
                 if (ret < 0)
                 {
@@ -165,6 +187,7 @@ int run_child(int idx, client_data *users, char *share_mem)
                     stop_child = true;
                 else
                 {
+                    //发送给指定客户端
                     send(connfd, share_mem + client * BUFFER_SIZE, BUFFER_SIZE, 0);
                 }
             }
@@ -196,9 +219,11 @@ int main(int argc, char const *argv[])
     int *sub_prcess = nullptr;//子进程和客户连接的映射关系表。用进程pid索引这个数组，取得该进程处理的客户连接的编号
 
     //初始化users以及hash表
-    int user_count = 0;                                  //当前的客户数量
-    client_data *users = new client_data[USER_LIMIT + 1];//客户连接数组。进程用客户连接的编号来索引这个数组，即可取得相关的客户连接数据
-    sub_prcess = new int[PROCESS_LIMIT];
+    int user_count = 0;//当前的客户数量
+    client_data *users = new client_data[USER_LIMIT + 1];
+    //客户连接数组。进程用客户连接的编号来索引这个数组，即可取得相关的客户连接数据
+    //这里必须*10，因为进程pid很大概率会大于65535，以前可以运行，现在不行了
+    sub_prcess = new int[PROCESS_LIMIT * 10];
     for (int i = 0; i < PROCESS_LIMIT; i++)
     {
         sub_prcess[i] = -1;
@@ -245,19 +270,24 @@ int main(int argc, char const *argv[])
         O_RDWR     Open the object for read-write access.
         O_CREAT    Create the shared memory object if it does not  exist.
     */
+    //shm_open打开一个共享内存对象,shm_name指定名字,有O_CREAT表示创建,0666设定权限。
     int shmfd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
     // A new shared memory object  initially  has  zero  length—the size of the object can be set using ftruncate(2).
     assert(shmfd != -1);
+    //ftruncate设置共享内存大小,这里是 USER_LIMIT * BUFFER_SIZE 字节。
     ret = ftruncate(shmfd, USER_LIMIT * BUFFER_SIZE);
     assert(ret != -1);
 
+    //开辟共享内存，建立映射，然后关掉
+    //mmap将共享内存映射到进程地址空间,NULL表示自动选择地址,后面是指定可读写,以及映射方式为共享。
     char *share_mem = (char *) mmap(NULL, USER_LIMIT * BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
     assert(share_mem != MAP_FAILED);
     close(shmfd);
-    //开辟共享内存，建立映射，然后关掉
+
 
     while (!stop_server)
     {
+        //获取活跃事件
         int number = epoll_wait(epollfd, events, MAX_EVENT_NUMBER, -1);
         if ((number < 0) && (errno != EINTR))
         {
@@ -283,7 +313,7 @@ int main(int argc, char const *argv[])
                 }
                 if (user_count >= USER_LIMIT)
                 {
-                    const char *info = "too many users,pls wait\n";
+                    const char *info = "too many users,please wait others disconnected.\n";
                     printf("%s", info);
                     send(connfd, info, strlen(info), 0);
                     close(connfd);
@@ -293,33 +323,38 @@ int main(int argc, char const *argv[])
                 users[user_count].address = client_address;
                 users[user_count].connfd = connfd;
 
-                //在主进程和子进程之间建立管道，以传递必要数据
+                //在主进程和子进程之间建立双向管道传输数据，可读又可写
                 ret = socketpair(PF_UNIX, SOCK_STREAM, 0, users[user_count].pipefd);
                 assert(ret != -1);
                 pid_t pid = fork();
+                //fork出错
                 if (pid < 0)
                 {
                     printf("fork() error\n");
                     close(connfd);
                     continue;
                 }
+                //子进程
                 else if (pid == 0)
                 {
-                    //子进程
+                    //关闭子进程不需要的文件描述符:epollfd、listenfd、主进程端pipe读端、信号管道。
                     close(epollfd);
                     close(listenfd);
                     close(users[user_count].pipefd[0]);
                     close(sig_pipefd[0]);
                     close(sig_pipefd[1]);
+
+                    //子进程处理事件的主循环
                     run_child(user_count, users, share_mem);
-
-
+                    //释放共享内存空间
                     munmap((void *) share_mem, USER_LIMIT * BUFFER_SIZE);
+                    //退出子进程
                     exit(0);
                 }
+                //父进程，>0就是父进程
                 else
                 {
-                    //父进程
+
                     close(connfd);
                     close(users[user_count].pipefd[1]);
                     addfd(epollfd, users[user_count].pipefd[0]);
@@ -413,7 +448,15 @@ int main(int argc, char const *argv[])
             {
                 int child = 0;
                 ret = recv(sockfd, (void *) &child, sizeof(child), 0);
-                printf("read data from child: %d accross pipe；ret=%d\n", child, ret);
+                printf("read data from child: %d across pipe；ret = %d\n", child, ret);
+
+                /*无法输出收到的数据，就很奇怪。
+                char recv_data[1024];
+                memset(recv_data, '\0', 1024);
+                recv(sockfd, recv_data, sizeof(recv_data), 0);
+                printf("Received data: %s\n", recv_data);
+*/
+
                 if (ret == -1)
                 {
                     printf("recv error\n");

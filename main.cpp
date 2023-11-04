@@ -228,7 +228,7 @@ int main(int argc, char *argv[])
 
     user_count = 0;
     users = new client_data[USER_LIMIT + 1];
-    sub_process = new int[PROCESS_LIMIT];
+    sub_process = new int[PROCESS_LIMIT * 10];
     for (int i = 0; i < PROCESS_LIMIT; ++i)
     {
         sub_process[i] = -1;
