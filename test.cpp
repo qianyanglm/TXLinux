@@ -143,7 +143,7 @@ int run_child(int idx, client_data *users, char *share_mem)
                 ret = recv(sockfd, share_mem + idx * BUFFER_SIZE, BUFFER_SIZE - 1, 0);
 
                 //我添加的打印语句，这里不太合适，出现的太早了
-                printf("Received %d bytes from client %d: %s\n", ret, i, share_mem + idx * BUFFER_SIZE);
+                printf("Received %d bytes from client %d: %s", ret, i, share_mem + idx * BUFFER_SIZE);
 
                 if (ret < 0)
                 {
@@ -156,7 +156,7 @@ int run_child(int idx, client_data *users, char *share_mem)
                     //标记是否退出循环
                     stop_child = true;
                     //打印信息来通知主进程
-                    printf("get nothing1\n");
+                    printf("\nget nothing1\n");
 
                     //我自己加的，每次一个客户端连接断开的时候，显示现在还有几个连接
                     printf("a client left\n");
@@ -448,7 +448,7 @@ int main(int argc, char const *argv[])
             {
                 int child = 0;
                 ret = recv(sockfd, (void *) &child, sizeof(child), 0);
-                printf("read data from child: %d across pipe；ret = %d\n", child, ret);
+                printf("read data from child: %d across pipe；ret = %d\n\n", child, ret);
 
                 /*无法输出收到的数据，就很奇怪。
                 char recv_data[1024];
