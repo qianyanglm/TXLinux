@@ -23,9 +23,11 @@
 #define MAX_EVENT_NUMBER 1024
 #define PROCESS_LIMIT 65535
 
+//管道数组
 int sig_pipefd[2];
 bool stop_child = false;//子进程的标志位
 
+//用户数据
 struct client_data
 {
     sockaddr_in address;//客户端的socket地址
@@ -178,11 +180,14 @@ int run_child(int idx, client_data *users, char *share_mem)
                 int client = 0;
                 //从共享内存中读出数据
                 ret = recv(sockfd, (void *) &client, sizeof(client), 0);
+                //读取失败
                 if (ret < 0)
                 {
+                    //如果是管道关闭就停止循环，如果是临时错误就再试一次读取
                     if (errno != EAGAIN)
                         stop_child = true;
                 }
+                //管道关闭
                 else if (ret == 0)
                     stop_child = true;
                 else
@@ -213,6 +218,7 @@ int main(int argc, char const *argv[])
     const char *ip = argv[1];
     int port = atoi(argv[2]);
 
+    //共享内存名字，方便不同进程通过名字来访问同一共享内存
     static const char *shm_name = "/my_shm";
 
     int listenfd;
@@ -264,24 +270,22 @@ int main(int argc, char const *argv[])
     addsig(SIGTERM, sig_handler);//SIGTERM，终止进程，kill命令默认发送的信号
     addsig(SIGINT, sig_handler); //SIGINT键盘输入以中断进程
     bool stop_server = false;
+    //终止
     bool terminate = false;
 
-    /*创建共享内存，作为所有客户socket连接的读缓存
-        O_RDWR     Open the object for read-write access.
-        O_CREAT    Create the shared memory object if it does not  exist.
-    */
-    //shm_open打开一个共享内存对象,shm_name指定名字,有O_CREAT表示创建,0666设定权限。
+    //创建共享内存，作为所有客户socket连接的读缓存
+    //shm_open创建/打开一个共享内存对象,shm_name指名字,O_CREAT表示如果不存在就创建一个,0666设定权限。
     int shmfd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
-    // A new shared memory object  initially  has  zero  length—the size of the object can be set using ftruncate(2).
     assert(shmfd != -1);
     //ftruncate设置共享内存大小,这里是 USER_LIMIT * BUFFER_SIZE 字节。
     ret = ftruncate(shmfd, USER_LIMIT * BUFFER_SIZE);
     assert(ret != -1);
 
-    //开辟共享内存，建立映射，然后关掉
+    //开辟共享内存，建立映射，然后关掉shmfd
     //mmap将共享内存映射到进程地址空间,NULL表示自动选择地址,后面是指定可读写,以及映射方式为共享。
     char *share_mem = (char *) mmap(NULL, USER_LIMIT * BUFFER_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, shmfd, 0);
     assert(share_mem != MAP_FAILED);
+    //关闭shmfd，他对已经建立好的共享内存映射没有影响，可以避免文件描述符被长期占用
     close(shmfd);
 
 
@@ -296,6 +300,8 @@ int main(int argc, char const *argv[])
             printf("epoll failure\n");
             break;
         }
+
+        //遍历接收到的事件
         for (int i = 0; i < number; i++)
         {
 
@@ -305,12 +311,14 @@ int main(int argc, char const *argv[])
             {
                 struct sockaddr_in client_address;
                 socklen_t client_addrlength = sizeof(client_address);
+                //接受新连接
                 int connfd = accept(sockfd, (struct sockaddr *) &client_address, &client_addrlength);
                 if (connfd < 0)
                 {
                     printf("errno is :%d\n", errno);
                     continue;
                 }
+                //如果当前连接数超过限制
                 if (user_count >= USER_LIMIT)
                 {
                     const char *info = "too many users,please wait others disconnected.\n";
@@ -326,6 +334,7 @@ int main(int argc, char const *argv[])
                 //在主进程和子进程之间建立双向管道传输数据，可读又可写
                 ret = socketpair(PF_UNIX, SOCK_STREAM, 0, users[user_count].pipefd);
                 assert(ret != -1);
+                //创建子进程
                 pid_t pid = fork();
                 //fork出错
                 if (pid < 0)
@@ -354,32 +363,41 @@ int main(int argc, char const *argv[])
                 //父进程，>0就是父进程
                 else
                 {
-
+                    //关闭套接字，父进程不再需要，有子进程处理
                     close(connfd);
+                    //关闭管道写端，父进程只需要读取数据
                     close(users[user_count].pipefd[1]);
+                    //将管道读端加入epoll，监听子进程写入管道事件
                     addfd(epollfd, users[user_count].pipefd[0]);
+                    //输出当前父进程pid和用户数量
                     printf("this is father pid=%d,there are %d users\n", getpid(), user_count);
+                    //记录新创建子进程的pid
                     users[user_count].pid = pid;
+                    //建立pid到用户连接编号的映射，可以通过pid找到对应的用户连接
                     sub_prcess[pid] = user_count;//建立hash表
                     user_count++;
                 }
             }
             //处理信号事件
+            //有信号事件到达
             else if ((sockfd == sig_pipefd[0]) && (events[i].events & EPOLLIN))
             {
                 int sig;
                 char signals[1024];
                 ret = recv(sig_pipefd[0], signals, 1024, 0);
+                //管道读取失败
                 if (ret == -1)
                 {
                     printf("recv error\n");
                     continue;
                 }
+                //管道关闭
                 else if (ret == 0)
                 {
                     printf("get nothing2\n");
                     continue;
                 }
+                //管道读取成功
                 else
                 {
                     //每个信号占一个字符，按字节逐个处理接收信号。
@@ -393,6 +411,7 @@ int main(int argc, char const *argv[])
                                 pid_t pid;
                                 int stat;
                                 //-1     meaning wait for any child process.
+                                //等待子进程的退出，WNOHANG表示不会阻塞
                                 while ((pid = waitpid(-1, &stat, WNOHANG)) > 0)
                                 {
                                     //用子进程的pid取得被关闭的连接的编号
@@ -402,12 +421,15 @@ int main(int argc, char const *argv[])
                                     {
                                         continue;
                                     }
+                                    //使用 epoll_ctl 函数从 epoll 实例 epollfd 中删除已关闭连接的管道文件描述符，因为不再需要监听它。
                                     epoll_ctl(epollfd, EPOLL_CTL_DEL, users[del_user].pipefd[0], 0);
+                                    //关闭已关闭连接的管道文件描述符。
                                     close(users[del_user].pipefd[0]);
                                     users[del_user] = users[--user_count];
                                     sub_prcess[users[del_user].pid] = del_user;
                                 }
                             }
+                                //如果 terminate 为真（通常表示服务器收到了关闭信号），且没有活跃用户连接，那么将 stop_server 设置为真，表示可以安全地关闭服务器。
                                 if (terminate && user_count == 0)
                                 {
                                     stop_server = true;
@@ -421,13 +443,17 @@ int main(int argc, char const *argv[])
                             {
                                 //结束服务器程序
                                 printf("killing all the child\n");
+                                //当前没有活跃的用户连接
                                 if (user_count == 0)
                                 {
+                                    //关闭服务器
                                     stop_server = true;
                                     break;
                                 }
+                                //如果有活跃用户连接，就遍历所有用户连接，让他们正常退出
                                 for (int i = 0; i < user_count; i++)
                                 {
+                                    //给每个子进程发送SIGTERM让他们退出
                                     int pid = users[i].pid;
                                     kill(pid, SIGTERM);
                                 }
@@ -443,7 +469,7 @@ int main(int argc, char const *argv[])
                     }
                 }
             }
-            //子进程向父进程写入了数据
+            //子进程向父进程写入了数据，即父进程检测到子进程管道可读
             else if (events[i].events & EPOLLIN)
             {
                 int child = 0;
@@ -454,21 +480,25 @@ int main(int argc, char const *argv[])
                 char recv_data[1024];
                 memset(recv_data, '\0', 1024);
                 recv(sockfd, recv_data, sizeof(recv_data), 0);
-                printf("Received data: %s\n", recv_data);
-*/
+                printf("Received data: %s\n", recv_data);*/
 
+                //管道读取失败
                 if (ret == -1)
                 {
                     printf("recv error\n");
+                    //跳过后续逻辑
                     continue;
                 }
+                //管道关闭
                 else if (ret == 0)
                 {
                     printf("get nothing3\n");
                     continue;
                 }
+                //读取到数据
                 else
                 {
+                    //发送数据给所有子进程除了当前子进程
                     for (int j = 0; j < user_count; j++)
                     {
                         if (users[j].pipefd[0] != sockfd)
