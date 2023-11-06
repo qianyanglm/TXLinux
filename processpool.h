@@ -3,5 +3,7 @@
 //
 #ifndef PROCESSPOOL_H_
 #define PROCESSPOOL_H_
+#include <sys/types.h>
+
 
 #endif//PROCESSPOOL_H_
