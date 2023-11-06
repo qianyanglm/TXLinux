@@ -1,107 +1,46 @@
-//代码清单13-5
-#include <arpa/inet.h>
-#include <assert.h>
-#include <climits>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <signal.h>
+//代码清单14-1
+#include "lock.h"
+#include <pthread.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/epoll.h>
-#include <sys/mman.h>
-#include <sys/shm.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
-static const int CONTROL_LEN = CMSG_LEN(sizeof(int));
+int a = 0;
+int b = 0;
+pthread_mutex_t mutex_a;
+pthread_mutex_t mutex_b;
 
-//发送文件描述符
-//fd参数是用来传递信息的UNIX域socket,fd_to_send参数是待发送的文件描述符
-void send_fd(int fd, int fd_to_send)
+void *another(void *arg)
 {
-    struct iovec iov[1];
-    struct msghdr msg;
-    char buf[10];
-
-    iov[0].iov_base = buf;
-    iov[0].iov_len = 1;
-    msg.msg_name = NULL;
-    msg.msg_namelen = 0;
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 1;
-
-    cmsghdr cm;
-    cm.cmsg_len = CONTROL_LEN;
-    cm.cmsg_level = SOL_SOCKET;
-    cm.cmsg_type = SCM_RIGHTS;
-    *(int *) CMSG_DATA(&cm) = fd_to_send;
-    //设置辅助数据
-    msg.msg_control = &cm;
-    msg.msg_controllen = CONTROL_LEN;
-
-    sendmsg(fd, &msg, 0);
-}
-
-//接收文件描述符
-int recv_fd(int fd)
-{
-    struct iovec iov[1];
-    struct msghdr msg;
-    char buf[0];
-
-    iov[0].iov_base = buf;
-    iov[0].iov_len = 1;
-    msg.msg_name = NULL;
-    msg.msg_namelen = 0;
-    msg.msg_iov = iov;
-    msg.msg_iovlen = 1;
-
-
-    cmsghdr cm;
-    msg.msg_control = &cm;
-    msg.msg_controllen = CONTROL_LEN;
-
-    recvmsg(fd, &msg, 0);
-
-    int fd_to_read = *(int *) CMSG_DATA(&cm);
-    return fd_to_read;
+    pthread_mutex_lock(&mutex_b);
+    printf("in child thread, got mutex b, waiting for mutex a\n");
+    sleep(5);
+    ++b;
+    pthread_mutex_lock(&mutex_a);
+    b += a++;
+    pthread_mutex_unlock(&mutex_a);
+    pthread_mutex_unlock(&mutex_b);
+    pthread_exit(NULL);
 }
 
 int main()
 {
-    int pipefd[2];
-    int fd_to_pass = 0;
-    //创建父子进程间的管道，文件描述符pipefd[0],和pipefd[1]都是UNIX域socket
-    int ret = socketpair(PF_UNIX, SOCK_DGRAM, 0, pipefd);
-    assert(ret != -1);
+    pthread_t id;
 
-    pid_t pid = fork();
-    assert(pid >= 0);
+    pthread_mutex_init(&mutex_a, NULL);
+    pthread_mutex_init(&mutex_b, NULL);
+    pthread_create(&id, NULL, another, NULL);
 
-    if (pid == 0)
-    {
-        close(pipefd[0]);
-        fd_to_pass = open("test.txt", O_RDWR, 0666);
-        //子进程通过管道将文件描述符发送到父进程，如果文件test.tct打开失败，则子进程将标准输入文件描述符发送到父进程
-        send_fd(pipefd[1], (fd_to_pass > 0) ? fd_to_pass : 0);
-        close(fd_to_pass);
-        exit(0);
-    }
+    pthread_mutex_lock(&mutex_a);
+    printf("in parent thread, got mutex a, waiting for mutex b\n");
+    sleep(5);
+    ++a;
+    pthread_mutex_lock(&mutex_b);
+    a += b++;
+    pthread_mutex_unlock(&mutex_b);
+    pthread_mutex_unlock(&mutex_a);
 
-    close(pipefd[1]);
-    //父进程从管道接收目标文件描述符
-    fd_to_pass = recv_fd(pipefd[0]);
-    char buf[1024];
-    memset(buf, '\0', 1024);
-    //读目标文件描述符，以验证其有效性
-    read(fd_to_pass, buf, 1024);
-    printf("I got fd %d and data: %s\n", fd_to_pass, buf);
-    close(fd_to_pass);
-
+    pthread_join(id, NULL);
+    pthread_mutex_destroy(&mutex_a);
+    pthread_mutex_destroy(&mutex_b);
     return 0;
 }
