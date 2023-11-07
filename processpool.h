@@ -1,6 +1,7 @@
 ﻿//
 // Created by A qian yang on 2023/11/6.
 //
+//代码清单15-1
 #ifndef PROCESSPOOL_H_
 #define PROCESSPOOL_H_
 #include <arpa/inet.h>
@@ -360,35 +361,54 @@ void processpool<T>::run_child()
     close(m_epollfd);
 }
 
+//父进程运行函数
 template<typename T>
 void processpool<T>::run_parent()
 {
+    //创建信号管道，用于父进程和子进程之间的通信
     setup_sig_pipe();
 
     //父进程监听m_listenfd
+    //将请求文件描述符和信号管道文件描述符添加到epoll实例中
     addfd(m_epollfd, m_listenfd);
 
+    //epoll事件数组，用于存储epoll监听到的事件
     epoll_event events[MAX_EVENT_NUMBER];
+    //记录下一个要分配新连接的子进程的索引
     int sub_process_counter = 0;
+    //新连接请求
     int new_conn = 1;
+    //记录返回的事件数量
     int number = 0;
     int ret = -1;
 
+    //监听连接请求和子进程退出信号
     while (!m_stop)
     {
+        //number记录返回的事件数量
+        //等待连接请求或者子进程退出信号
         number = epoll_wait(m_epollfd, events, MAX_EVENT_NUMBER, -1);
+
+        //epoll_wait返回-1且不是EINTR(信号中断)错误
         if ((number < 0) && (errno != EINTR))
         {
             printf("epoll failure\n");
+            //跳出循环
             break;
         }
+
+        //开始遍历接收到的事件
         for (int i = 0; i < number; ++i)
         {
+            //获取事件的文件描述符
             int sockfd = events[i].data.fd;
+            //判断事件的文件描述符是否为连接请求文件描述符
             if (sockfd == m_listenfd)
             {
                 //如果有新连接到来，就采用Round Robin方式将其分配个一个子进程处理
+                //获取下一个要分配新连接的子进程的索引
                 int i = sub_process_counter;
+                //采用轮询的方式将新链接请求分配给子进程处理
                 do
                 {
                     if (m_sub_process[i].m_pid != -1)
@@ -398,13 +418,18 @@ void processpool<T>::run_parent()
                     i = (i + 1) % m_process_number;
                 } while (i != sub_process_counter);
 
+                //判断子进程是否还在运行
                 if (m_sub_process[i].m_pid == -1)
                 {
+                    //否则跳出上面的while循环
                     m_stop = true;
                     break;
                 }
 
+                //更新下一个要分配新连接的子进程的索引
                 sub_process_counter = (i + 1) % m_process_number;
+                //更新 sub_process_counter 变量的目的是为了确保新连接请求均匀地分配给所有子进程。
+                //将new_conn变量发送给子进程
                 send(m_sub_process[i].m_pipefd[0], (char *) &new_conn, sizeof(new_conn), 0);
                 printf("Send request to child\n", i);
             }
@@ -413,6 +438,7 @@ void processpool<T>::run_parent()
             {
                 int sig;
                 char signals[1024];
+                //从管道文件开始读取信号
                 ret = recv(sig_pipefd[0], signals, sizeof(signals), 0);
                 if (ret < 0)
                 {
@@ -420,20 +446,26 @@ void processpool<T>::run_parent()
                 }
                 else
                 {
+                    //开始读取每个信号
                     for (int i = 0; i < ret; ++i)
                     {
+                        //开始根据信号的值判断
                         switch (signals[i])
                         {
+                                //收到了SIGCHLD信号
                             case SIGCHLD:
                             {
                                 pid_t pid;
                                 int stat;
                                 //返回pid是子进程pid
+                                //循环等待子进程退出
                                 while ((pid = waitpid(-1, &stat, WNOHANG)) > 0)
                                 {
+                                    //遍历所有子进程
                                     for (int i = 0; i < m_process_number; ++i)
                                     {
                                         //如果进程池中第i个子进程退出了，则主进程关闭相应的通信管道，并设置相应的m_pid为-1，以标记该子进程已经退出
+                                        //判断是否子进程退出
                                         if (m_sub_process[i].m_pid == pid)
                                         {
                                             printf("child %d join\n", i);
@@ -460,9 +492,12 @@ void processpool<T>::run_parent()
                                 printf("kill all the child now!\n");
                                 for (int i = 0; i < m_process_number; ++i)
                                 {
+                                    //获取子进程pid
                                     int pid = m_sub_process[i].m_pid;
+                                    //判断子进程是否还在运行
                                     if (pid != -1)
                                     {
+                                        //向子进程发送SIGTERM信号
                                         kill(pid, SIGTERM);
                                     }
                                 }
