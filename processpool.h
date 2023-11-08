@@ -431,7 +431,7 @@ void processpool<T>::run_parent()
                 //更新 sub_process_counter 变量的目的是为了确保新连接请求均匀地分配给所有子进程。
                 //将new_conn变量发送给子进程
                 send(m_sub_process[i].m_pipefd[0], (char *) &new_conn, sizeof(new_conn), 0);
-                printf("Send request to child\n", i);
+                printf("Send request to child %d\n", i);
             }
             //下面处理父进程收到的信号
             else if ((sockfd == sig_pipefd[0]) && (events[i].events & EPOLLIN))
