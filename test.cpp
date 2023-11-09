@@ -1,6 +1,4 @@
 //代码清单15-2 CGI服务器
-
-
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
@@ -18,6 +16,7 @@
 
 // 引用上一节介绍的进程池
 #include "processpool.h"
+#include "threadpool.h"
 
 //用于处理客户CGI请求的类，它可以作为processpool类的模板参数
 class cgi_conn
@@ -68,6 +67,7 @@ public:
             else
             {
                 m_read_idx += ret;
+                //把HTTP请求传输到服务器终端
                 printf("user content is: %s\n", m_buf);
                 //如果遇到字符"\r\n", 则开始处理客户请求
                 for (; idx < m_read_idx; ++idx)
@@ -87,7 +87,7 @@ public:
                 char *file_name = m_buf;
                 //判断客户要运行的CGI程序是否存在
                 //access就是访问某个文件是否存在
-                printf("m_buf : %s\n", m_buf);
+                //printf("m_buf : %s\n", m_buf);
                 if (access(file_name, F_OK) == -1)
                 {
                     removefd(m_epolld, m_sockfd);
