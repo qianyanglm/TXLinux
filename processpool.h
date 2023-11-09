@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 //子进程的类
 class process
@@ -109,7 +110,7 @@ static int setnonblocking(int fd)
 }
 
 //将fd文件描述符上的事件添加到epollfd代表的epoll事件表中
-void addfd(int epollfd, int fd)
+static void addfd(int epollfd, int fd)
 {
     epoll_event event;
     event.data.fd = fd;
@@ -129,7 +130,7 @@ static void removefd(int epollfd, int fd)
 }
 
 //信号处理函数
-void sig_handler(int sig)
+static void sig_handler(int sig)
 {
     //保留原来的errno，在函数最后恢复，以保证函数的可重入性
     int save_errno = errno;
@@ -140,7 +141,7 @@ void sig_handler(int sig)
 }
 
 //注册信号处理函数
-void addsig(int sig, void(handler)(int), bool restart = true)
+static void addsig(int sig, void(handler)(int), bool restart = true)
 {
     //信号处理相关设置的结构体
     struct sigaction sa;
@@ -183,6 +184,7 @@ processpool<T>::processpool(int listenfd, int process_number): m_listenfd(listen
         if (m_sub_process[i].m_pid > 0)
         {
             close(m_sub_process[i].m_pipefd[1]);
+            continue;
         }
         //子进程
         else
@@ -218,8 +220,8 @@ void processpool<T>::setup_sig_pipe()
     addsig(SIGTERM, sig_handler);
     //由用户输入发送给进程的中断信号
     addsig(SIGINT, sig_handler);
-    //当进程试图向一个已经关闭的管道写入数据时，发送给该进程的信号
-    addsig(SIGPIPE, sig_handler);
+    //告诉操作系统忽略 SIGPIPE 信号。这意味着当进程尝试写入已关闭的套接字时，进程不会被终止。
+    addsig(SIGPIPE, SIG_IGN);
 }
 
 //父进程中m_idx值为-1，子进程m_idx>=0，以此判断运行的是父/子进程代码
@@ -275,7 +277,7 @@ void processpool<T>::run_child()
             {
                 int client = 0;
                 //从父子进程之间的管道读取数据，并将结果保存在变量client中，如果读取成功则表示有新客户连接要到来
-                ret == recv(sockfd, (char *) &client, sizeof(client), 0);
+                ret = recv(sockfd, (char *) &client, sizeof(client), 0);
                 if (((ret < 0) && (errno != EAGAIN)) || ret == 0)
                 {
                     continue;
