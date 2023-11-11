@@ -130,6 +130,7 @@ void http_conn::init()
 }
 
 //从状态机,用于解析HTTP请求行
+//这段代码之所以要判断两次，是因为 HTTP 协议规定，请求行的结尾可以是 \r\n 或 \n，所以多了一个逻辑来判断\n情况
 http_conn::LINE_STATUS http_conn::parse_line()
 {
     char temp;
@@ -147,9 +148,10 @@ http_conn::LINE_STATUS http_conn::parse_line()
             //如果回车符后面有换行符，则表示请求行解析完毕，返回 LINE_OK 状态。
             else if (m_read_buf[m_checked_idx + 1] == '\n')
             {
+                //设置为空字符，表示请求行的结束
                 m_read_buf[m_checked_idx++] = '\0';
                 m_read_buf[m_checked_idx++] = '\0';
-                return lINE_OK;
+                return LINE_OK;
             }
 
             //如果遇到其他字符，则表示请求行解析失败，返回 LINE_BAD 状态。
@@ -161,9 +163,10 @@ http_conn::LINE_STATUS http_conn::parse_line()
             //如果换行符前面有回车符，则表示请求行解析完毕，返回 LINE_OK 状态
             if ((m_checked_idx > 1) && (m_read_buf[m_checked_idx - 1] == '\r'))
             {
+                //设置为空字符，表示请求行的结束。
                 m_read_buf[m_checked_idx - 1] = '\0';
                 m_read_buf[m_checked_idx++] = '\0';
-                return lINE_OK;
+                return LINE_OK;
             }
 
             //如果换行符前面没有回车符，则表示请求行解析失败，返回 LINE_BAD 状态。
@@ -172,4 +175,209 @@ http_conn::LINE_STATUS http_conn::parse_line()
     }
     //如果循环结束，则表示请求行还没有解析完，返回 LINE_OPEN 状态。
     return LINE_OPEN;
+}
+
+//循环读取客户数据，直到无数据可读或者对方关闭连接
+bool http_conn::read()
+{
+    //如果读缓冲区已满，返回false
+    if (m_read_idx >= READ_BUFFER_SIZE)
+    {
+        return false;
+    }
+
+    int bytes_read = 0;
+    while (true)
+    {
+        bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+        if (bytes_read == -1)
+        {
+            //表示读取数据没有准备好，可以稍后再试。
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                break;
+            }
+            return false;
+        }
+        //客户端关闭了连接
+        else if (bytes_read == 0)
+        {
+            return false;
+        }
+        m_read_idx += bytes_read;
+    }
+    return true;
+}
+
+//解析HTTP请求行，获得请求方法、目标URL，以及HTTP版本号
+http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
+{
+    //返回text中匹配" \t"的参数
+    m_url = strpbrk(text, " \t");
+    if (!m_url)
+    {
+        return BAD_REQUEST;
+    }
+    *m_url++ = '\0';
+
+    char *method = text;
+    //忽略大小写比较字符串相同返回0
+    if (strcasecmp(method, "GET") == 0)
+    {
+        m_method = GET;
+    }
+    else
+    {
+        return BAD_REQUEST;
+    }
+
+    //返回m_url中第一个不在" \t"中出现的字符下标
+    m_url += strspn(m_url, " \t");
+    //返回m_url中匹配" \t"的参数
+    m_version = strpbrk(m_url, " \t");
+    if (!m_version)
+    {
+        return BAD_REQUEST;
+    }
+    *m_version++ = '\0';
+    m_version += strspn(m_version, " \t");
+    if (strcasecmp(m_version, "HTTP/1.1") != 0)
+    {
+        return BAD_REQUEST;
+    }
+    //忽略大小写比较前7个字符
+    if (strncasecmp(m_url, "http://", 7) == 0)
+    {
+        m_url += 7;
+        //查找返回'/'出现的位置
+        m_url = strchr(m_url, '/');
+    }
+
+    if (!m_url || m_url[0] != '/')
+    {
+        return BAD_REQUEST;
+    }
+
+    m_check_state = CHECK_STATE_HEADER;
+    return NO_REQUEST;
+}
+
+//解析HTTP请求的一个头部信息
+http_conn::HTTP_CODE http_conn::parse_headers(char *text)
+{
+    //遇到空行，表示头部字段解析完毕
+    if (text[0] == '\0')
+    {
+        //如果HTTP请求有消息体，则还需要读取m_content_length字节的消息体，状态机转移到CHECK_STATE_CONTENT状态
+        if (m_content_length != 0)
+        {
+            m_check_state = CHECK_STATE_CONTENT;
+            return NO_REQUEST;
+        }
+
+        //否则说明我们已经得到了一个完整的HTTP请求
+        return GET_REQUEST;
+    }
+    //处理Connection头部字段
+    else if (strncasecmp(text, "Connection:", 11) == 0)
+    {
+        text += 11;
+        text += strspn(text, " \t");
+        if (strcasecmp(text, "keep-alive") == 0)
+        {
+            m_linger = true;
+        }
+    }
+    //处理Content-Length头部字段
+    else if (strncasecmp(text, "Content-Length:", 15) == 0)
+    {
+        text += 15;
+        text += strspn(text, " \t");
+        m_content_length = atol(text);
+    }
+    //处理Host头部字段
+    else if (strncasecmp(text, "Host:", 5) == 0)
+    {
+        text += 5;
+        text += strspn(text, " \t");
+        m_host = text;
+    }
+    else
+    {
+        printf("oop! unknow header %s\n", text);
+    }
+
+    return NO_REQUEST;
+}
+
+//未真正解析HTTP请求的消息体，只是判断它是否被完整地读入了
+http_conn::HTTP_CODE http_conn::parse_content(char *text)
+{
+    //适用于GET请求，因为GET请求的请求体长度是固定的
+    if (m_read_idx >= (m_content_length + m_checked_idx))
+    {
+        text[m_content_length] = '\0';
+        return GET_REQUEST;
+    }
+
+    return NO_REQUEST;
+}
+
+//主状态机。
+http_conn::HTTP_CODE http_conn::process_read()
+{
+
+    //存储行解析的状态
+    LINE_STATUS line_status = LINE_OK;
+    HTTP_CODE ret = NO_REQUEST;
+    //存储正在解析的文本
+    char *text = 0;
+
+    while (((m_check_state == CHECK_STATE_CONTENT) && (line_status == LINE_OK)) || ((line_status == parse_line()) == LINE_OK))
+    {
+        text = get_line();
+        m_start_line = m_checked_idx;
+        printf("got 1 http line: %s\n", text);
+
+        switch (m_check_state)
+        {
+            case CHECK_STATE_REQUESTLINE:
+            {
+                ret = parse_request_line(text);
+                if (ret == BAD_REQUEST)
+                {
+                    return BAD_REQUEST;
+                }
+                break;
+            }
+            case CHECK_STATE_HEADER:
+            {
+                ret = parse_headers(text);
+                if (ret == BAD_REQUEST)
+                {
+                    return BAD_REQUEST;
+                }
+                else if (ret == GET_REQUEST)
+                {
+                    return do_request();
+                }
+                break;
+            }
+            case CHECK_STATE_CONTENT:
+            {
+                ret = parse_content(text);
+                if (ret == GET_REQUEST)
+                {
+                    return do_request();
+                }
+                line_status = LINE_OPEN;
+                break;
+            }
+            default:
+            {
+                return INTERAL_ERROR;
+            }
+        }
+    }
+    return NO_REQUEST;
 }

@@ -65,7 +65,7 @@ public:
     };
 
     //行的读取状态
-    enum LINE_STATUS { lINE_OK = 0,//行读取完毕
+    enum LINE_STATUS { LINE_OK = 0,//行读取完毕
                        LINE_BAD,   //行读取失败
                        LINE_OPEN   //行还没有读取完毕
     };
@@ -96,9 +96,13 @@ private:
 
 
     //下面一组函数被process_read函数调用以分析HTTP请求
+    //解析请求行
     HTTP_CODE parse_request_line(char *text);
+    //解析请求头
     HTTP_CODE parse_headers(char *text);
+    //解析请求体
     HTTP_CODE parse_content(char *text);
+    //根据请求方法来处理请求
     HTTP_CODE do_request();
 
     char *get_line() { return m_read_buf + m_start_line; }
@@ -106,12 +110,19 @@ private:
     LINE_STATUS parse_line();
 
     //下面这一组函数被process_write调用以填充HTTP应答
+    //释放指向的内存
     void unmap();
+    //添加HTTP函数用于添加HTTP应答头或正文
     bool add_response(const char *format, ...);
+    //添加HTTP正文
     bool add_content(const char *content);
+    //添加HTTP状态行
     bool add_status_line(int status, const char *title);
+    //添加HTTP头部，`Content-Type: text/html` 和 `Content-Length
     bool add_headers(int content_length);
+    //添加HTTP头部，Connection: keep-alive
     bool add_linger();
+    //添加HTTP空行
     bool add_blank_line();
 
 
