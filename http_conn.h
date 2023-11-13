@@ -105,8 +105,10 @@ private:
     //根据请求方法来处理请求
     HTTP_CODE do_request();
 
+    //获取一行文本
     char *get_line() { return m_read_buf + m_start_line; }
 
+    //解析一行文本
     LINE_STATUS parse_line();
 
     //下面这一组函数被process_write调用以填充HTTP应答

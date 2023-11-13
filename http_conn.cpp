@@ -2,6 +2,7 @@
 // Created by A qian yang on 2023/11/9.
 //
 #include "http_conn.h"
+#include <sys/uio.h>
 
 //定义HTTP响应的一些状态信息
 const char *ok_200_title = "OK";
@@ -55,7 +56,7 @@ void removefd(int epollfd, int fd)
 }
 
 //对指定在epoll中的fd注册进行修改
-void mofd(int epollfd, int fd, int ev)
+void modfd(int epollfd, int fd, int ev)
 {
     epoll_event event;
     event.data.fd = fd;
@@ -335,10 +336,12 @@ http_conn::HTTP_CODE http_conn::process_read()
 
     while (((m_check_state == CHECK_STATE_CONTENT) && (line_status == LINE_OK)) || ((line_status == parse_line()) == LINE_OK))
     {
+        //获取一行文本
         text = get_line();
         m_start_line = m_checked_idx;
         printf("got 1 http line: %s\n", text);
 
+        //根据状态解析HTTP请求
         switch (m_check_state)
         {
             case CHECK_STATE_REQUESTLINE:
@@ -370,9 +373,11 @@ http_conn::HTTP_CODE http_conn::process_read()
                 {
                     return do_request();
                 }
+                //如果请求体解析失败设置为LINE_OPEN表示没有解析完毕
                 line_status = LINE_OPEN;
                 break;
             }
+                //如果不是这三种状态就报错
             default:
             {
                 return INTERAL_ERROR;
@@ -380,4 +385,95 @@ http_conn::HTTP_CODE http_conn::process_read()
         }
     }
     return NO_REQUEST;
+}
+
+//当得到一个完整、正确得到HTTP请求时，我们就分析目标文件的属性，如果目标文件存在、对所有用户可读，则使用mmap将其映射到内存地址m_file_address处，并告诉调用者获取文件成功
+http_conn::HTTP_CODE http_conn::do_request()
+{
+    //把doc_root指向的字符串复制到m_real_file中
+    strcpy(m_real_file, doc_root);
+    int len = strlen(doc_root);
+    //将m_url剩余的字符串追加到m_real_file末尾得到目标文件的完整路径
+    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    //获取文件属性
+    if (stat(m_real_file, &m_file_stat) < 0)
+    {
+        return NO_REQUEST;
+    }
+    //如果文件不存在
+    if (!(m_file_stat.st_mode & S_IROTH))
+    {
+        return FORBIDDEN_REQUEST;
+    }
+    //如果文件不可读
+    if (S_ISDIR(m_file_stat.st_mode))
+    {
+        return BAD_REQUEST;
+    }
+    //只读方式打开文件
+    int fd = open(m_real_file, O_RDONLY);
+    //将文件映射到内存
+    m_file_address = (char *) mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    //关闭文件
+    close(fd);
+    return FILE_REQUEST;
+}
+
+//堆内存映射区执行munmap操作
+void http_conn::unmap()
+{
+    if (m_file_address)
+    {
+        //释放文件映射区
+        munmap(m_file_address, m_file_stat.st_size);
+        m_file_address = 0;
+    }
+}
+
+//写http响应
+bool http_conn::write()
+{
+    int temp = 0;
+    int bytes_have_send = 0;
+    int bytes_to_send = m_write_idx;
+    if (bytes_to_send == 0)
+    {
+        modfd(m_epollfd, m_sockfd, EPOLLIN);
+        init();
+        return true;
+    }
+    while (1)
+    {
+        //将多块内存数据一并写入文件描述符中
+        temp = writev(m_sockfd, m_iv, m_iv_count);
+        if (temp <= -1)
+        {
+            //如果TCP写缓冲没有空间，则等待下一轮EPOLLOUT事件。虽然在此期间，服务器无法立即接收到同一个客户的下一个请求，但是可以保证连接的完整性
+            if (errno == EAGAIN)
+            {
+                modfd(m_epollfd, m_sockfd, EPOLLOUT);
+                return true;
+            }
+            unmap();
+            return false;
+        }
+        bytes_to_send -= temp;
+        bytes_have_send += temp;
+        if (bytes_to_send <= bytes_have_send)
+        {
+            //发送HTTP响应成功，根据HTTP请求中的Conection字段决定是否立即关闭连接
+            unmap();
+            if (m_linger)
+            {
+                init();
+                modfd(m_epollfd, m_sockfd, EPOLLIN);
+                return true;
+            }
+            else
+            {
+                modfd(m_epollfd, m_sockfd, EPOLLIN);
+                return false;
+            }
+        }
+    }
 }
