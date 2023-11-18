@@ -477,3 +477,14 @@ bool http_conn::write()
         }
     }
 }
+
+//往写缓冲中写入待发送的数据
+bool http_conn::add_response(const char *format, ...)
+{
+    if (m_write_idx >= WRITE_BUFFER_SIZE)
+    {
+        return false;
+    }
+    va_list arg_list;
+    va_start(arg_list, format);
+}
