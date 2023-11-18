@@ -123,6 +123,7 @@ private:
     //添加HTTP头部，`Content-Type: text/html` 和 `Content-Length
     bool add_headers(int content_length);
     //添加HTTP头部，Connection: keep-alive
+    bool add_content_length(int content_length);
     bool add_linger();
     //添加HTTP空行
     bool add_blank_line();
